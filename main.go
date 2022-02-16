@@ -5,6 +5,7 @@ import (
 	"encoding/gob"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -188,6 +189,11 @@ func parent() {
 
 	e := make(chan Encoder, 1)
 	d := make(chan Decoder, 1)
+
+	ul, err := net.ListenUnix("unix", &net.UnixAddr{})
+	if err != nil {
+		panic(err)
+	}
 
 	go func() {
 		for ctx.Err() == nil {

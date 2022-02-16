@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"log"
 	"net"
+	"net/rpc"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -53,13 +55,15 @@ func worker() {
 		panic(err)
 	}
 
-	arg := "ok listen up"
-
-	err = json.NewEncoder(in).Encode(arg)
+	client := rpc.NewClient(in)
+	defer client.Close()
+	args := &Args{7, 8}
+	var reply int
+	err = client.Call("Arith.Multiply", args, &reply)
 	if err != nil {
-		panic(err)
+		log.Fatal("arith error:", err)
 	}
-
+	fmt.Printf("Arith: %d*%d=%d", args.A, args.B, reply)
 }
 
 func parent() {
@@ -76,7 +80,9 @@ func parent() {
 		panic(err)
 	}
 	defer ul.Close()
-	fmt.Println(ul.Addr().String())
+
+	arith := new(Arith)
+	rpc.Register(arith)
 
 	for ctx.Err() == nil {
 		func() {
@@ -112,14 +118,34 @@ func parent() {
 					panic(err)
 				}
 
-				var data interface{}
-				decoder := json.NewDecoder(conn)
-				if err := decoder.Decode(&data); err != nil {
-					panic(err)
-				}
-				fmt.Printf("Data received from child pipe: %v\n", data)
+				rpc.ServeConn(conn)
 			}
 		}()
 	}
 
+}
+
+// from net/rpc
+type Args struct {
+	A, B int
+}
+
+type Quotient struct {
+	Quo, Rem int
+}
+
+type Arith int
+
+func (t *Arith) Multiply(args *Args, reply *int) error {
+	*reply = args.A * args.B
+	return nil
+}
+
+func (t *Arith) Divide(args *Args, quo *Quotient) error {
+	if args.B == 0 {
+		return errors.New("divide by zero")
+	}
+	quo.Quo = args.A / args.B
+	quo.Rem = args.A % args.B
+	return nil
 }

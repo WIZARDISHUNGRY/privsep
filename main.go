@@ -42,7 +42,7 @@ func fromFD(fd uintptr) (f *os.File, err error) {
 func worker() {
 	defer fmt.Println("child exiting")
 
-	_, cancel := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
 	defer cancel()
 
 	// go func() {
@@ -70,6 +70,10 @@ func worker() {
 	const MAX_COUNT = 1 << 12
 
 	for i := 0; i < MAX_COUNT; i++ {
+		if ctx.Err() != nil {
+			fmt.Println("ctx done")
+			return
+		}
 		err = client.Call("Arith.Multiply", args, &reply)
 		if err != nil {
 			log.Fatal("arith error:", err)

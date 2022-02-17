@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"time"
+	"unsafe"
 )
 
 var (
@@ -44,26 +45,45 @@ func worker() {
 	_, cancel := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
 	defer cancel()
 
-	go func() {
-		time.Sleep(1 * time.Second)
-		fmt.Println("You know I love to crash")
-		os.Exit(1)
-	}()
+	// go func() {
+	// 	time.Sleep(1 * time.Second)
+	// 	fmt.Println("You know I love to crash")
+	// 	os.Exit(1)
+	// }()
 
 	in, err := fromFD(3)
 	if err != nil {
 		panic(err)
 	}
-
-	client := rpc.NewClient(in)
-	defer client.Close()
-	args := &Args{7, 8}
-	var reply int
-	err = client.Call("Arith.Multiply", args, &reply)
+	defer in.Close()
+	conn, err := net.FileConn(in)
 	if err != nil {
-		log.Fatal("arith error:", err)
+		panic(err)
 	}
-	fmt.Printf("Arith: %d*%d=%d", args.A, args.B, reply)
+	defer conn.Close()
+
+	client := rpc.NewClient(conn)
+	defer client.Close()
+	args := &Args{A: 7, B: 8}
+	var reply int
+	var startTime = time.Now()
+	const MAX_COUNT = 1 << 12
+
+	for i := 0; i < MAX_COUNT; i++ {
+		err = client.Call("Arith.Multiply", args, &reply)
+		if err != nil {
+			log.Fatal("arith error:", err)
+		}
+	}
+
+	dur := time.Now().Sub(startTime)
+	size := unsafe.Sizeof(*args)
+	rate := float64(MAX_COUNT) / dur.Seconds()
+	fmt.Printf("message size is %d bytes\n", size)
+	fmt.Printf("%d msgs in %v (%f req/s)\n", MAX_COUNT, dur, rate)
+	fmt.Printf("%f bytes/s (%f mb/s)\n", float64(size)*rate, float64(size)*rate/float64(1<<20))
+	fmt.Printf("Arith: %d*%d=%d\n", args.A, args.B, reply)
+
 }
 
 func parent() {
@@ -83,6 +103,7 @@ func parent() {
 
 	arith := new(Arith)
 	rpc.Register(arith)
+	go rpc.Accept(ul)
 
 	for ctx.Err() == nil {
 		func() {
@@ -112,14 +133,6 @@ func parent() {
 			}
 			defer cmd.Wait()
 
-			{
-				conn, err := ul.Accept()
-				if err != nil {
-					panic(err)
-				}
-
-				rpc.ServeConn(conn)
-			}
 		}()
 	}
 
@@ -128,6 +141,7 @@ func parent() {
 // from net/rpc
 type Args struct {
 	A, B int
+	crap [1 << 24]byte // 16 MB for stress
 }
 
 type Quotient struct {

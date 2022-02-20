@@ -31,7 +31,7 @@ func main() {
 }
 
 func fromFD(fd uintptr) (f *os.File, err error) {
-	f = os.NewFile(uintptr(fd), "unixx")
+	f = os.NewFile(uintptr(fd), "unix")
 	if f == nil {
 		err = fmt.Errorf("nil for fd %d", fd)
 	}
@@ -56,38 +56,22 @@ func worker() {
 		panic(err)
 	}
 	defer in.Close()
-	conn, err := net.FileConn(in)
+	listener, err := net.FileListener(in)
 	if err != nil {
 		panic(err)
 	}
-	defer conn.Close()
+	defer listener.Close()
 
-	client := rpc.NewClient(conn)
-	defer client.Close()
-	args := &Args{A: 7, B: 8}
-	var reply int
-	var startTime = time.Now()
-	const MAX_COUNT = 1 << 12
+	server := rpc.NewServer()
+	arith := new(Arith)
+	server.Register(arith)
 
-	for i := 0; i < MAX_COUNT; i++ {
-		if ctx.Err() != nil {
-			fmt.Println("ctx done")
-			return
-		}
-		err = client.Call("Arith.Multiply", args, &reply)
-		if err != nil {
-			log.Fatal("arith error:", err)
-		}
-	}
+	go func() {
+		<-ctx.Done()
+		listener.Close()
+	}()
 
-	dur := time.Now().Sub(startTime)
-	size := unsafe.Sizeof(*args)
-	rate := float64(MAX_COUNT) / dur.Seconds()
-	fmt.Printf("message size is %d bytes\n", size)
-	fmt.Printf("%d msgs in %v (%f req/s)\n", MAX_COUNT, dur, rate)
-	fmt.Printf("%f bytes/s (%f mb/s)\n", float64(size)*rate, float64(size)*rate/float64(1<<20))
-	fmt.Printf("Arith: %d*%d=%d\n", args.A, args.B, reply)
-
+	server.Accept(listener)
 }
 
 func parent() {
@@ -99,26 +83,17 @@ func parent() {
 	args := append([]string{}, os.Args[1:]...)
 	args = append(args, "-child")
 
-	ul, err := net.ListenUnix("unix", &net.UnixAddr{})
-	if err != nil {
-		panic(err)
-	}
-	defer ul.Close()
-
-	arith := new(Arith)
-	rpc.Register(arith)
-	go rpc.Accept(ul)
-
 	for ctx.Err() == nil {
 		func() {
 			fmt.Println("spawning new child")
 
-			conn, err := net.DialUnix("unix", nil, ul.Addr().(*net.UnixAddr))
+			ul, err := net.ListenUnix("unix", &net.UnixAddr{})
 			if err != nil {
 				panic(err)
 			}
-			defer conn.Close()
-			f, err := conn.File()
+			defer ul.Close()
+
+			f, err := ul.File()
 			if err != nil {
 				panic(err)
 			}
@@ -137,6 +112,42 @@ func parent() {
 			}
 			defer cmd.Wait()
 
+			conn, err := net.DialUnix("unix", nil, ul.Addr().(*net.UnixAddr))
+			if err != nil {
+				panic(err)
+			}
+			defer conn.Close()
+
+			client := rpc.NewClient(conn)
+			defer client.Close()
+
+			args := &Args{A: 7, B: 8}
+			var reply int
+			var startTime = time.Now()
+			const MAX_COUNT = 1 << 12
+
+			for i := 0; i < MAX_COUNT; i++ {
+				if ctx.Err() != nil {
+					fmt.Println("ctx done")
+					return
+				}
+				err = client.Call("Arith.Multiply", args, &reply)
+				if err != nil {
+					log.Fatal("arith error:", err)
+				}
+			}
+
+			dur := time.Now().Sub(startTime)
+			size := unsafe.Sizeof(*args)
+			rate := float64(MAX_COUNT) / dur.Seconds()
+			fmt.Printf("message size is %d bytes\n", size)
+			fmt.Printf("%d msgs in %v (%f req/s)\n", MAX_COUNT, dur, rate)
+			fmt.Printf("%f bytes/s (%f mb/s)\n", float64(size)*rate, float64(size)*rate/float64(1<<20))
+			fmt.Printf("Arith: %d*%d=%d\n", args.A, args.B, reply)
+
+			if err := cmd.Process.Signal(os.Interrupt); err != nil {
+				fmt.Println("signal error", err)
+			}
 		}()
 	}
 
